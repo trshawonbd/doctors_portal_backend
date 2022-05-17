@@ -1,6 +1,8 @@
 const express = require('express')
 const cors = require('cors');
 const { MongoClient, ServerApiVersion } = require('mongodb');
+var nodemailer = require('nodemailer');
+var sgTransport = require('nodemailer-sendgrid-transport');
 require('dotenv').config();
 const app = express();
 const jwt = require('jsonwebtoken');
@@ -31,6 +33,46 @@ function verifyJWT(req, res, next) {
 
 }
 
+const emailSenderOption = {
+  auth: {
+    api_key: process.env.EMAIL_SENDER
+  }
+}
+
+const emailSenderClient = nodemailer.createTransport(sgTransport(emailSenderOption));
+
+function sendConfirmationEmail(booking) {
+  const { patient, patientName, treatment, date, slot } = booking;
+  var email = {
+    from: process.env.EMAIL_SENDER_ADDRESS,
+    to: patient,
+    subject: `Appointment Booked for ${treatment} on ${date} at ${slot}`,
+    text: `Appointment Booked for ${treatment} on ${date} at ${slot}`,
+    html: `
+    <div>
+        <strong>Appointment Booked for ${treatment} on ${date} at ${slot}</strong>
+    </div>
+    <div>
+    <p>“${treatment} is paid for their time, skill level, and the effort it took to get to that level.”
+
+    Understanding the different factors that affect your treatment can help you determine how you stack up and where there's room to grow.
+    
+    This week on Doctors Portal, explore insights and uncover how to boost with international doctors</p>
+    
+    </div>
+    `
+  };
+
+  emailSenderClient.sendMail(email, function (err, info) {
+    if (err) {
+      console.log(err);
+    }
+    else {
+      console.log('Message sent: ', info);
+    }
+  });
+}
+
 async function run() {
   try {
     await client.connect();
@@ -39,9 +81,21 @@ async function run() {
     const userCollection = client.db("doctors_portal").collection("users");
     const doctorCollection = client.db("doctors_portal").collection("doctors");
 
+
+    const verifyAdmin = async (req, res, next) => {
+      const initiator = req.decoded.email;
+      const initiatorAcoount = await userCollection.findOne({ email: initiator });
+      if (initiatorAcoount.role === 'admin') {
+        next();
+      }
+      else {
+        res.status(403).send({ message: 'Forbidden access' })
+      }
+    }
+
     app.get('/service', async (req, res) => {
       const query = {};
-      const cursor = serviceCollection.find(query).project({name:1});
+      const cursor = serviceCollection.find(query).project({ name: 1 });
       const services = await cursor.toArray();
       res.send(services);
     })
@@ -69,7 +123,7 @@ async function run() {
     })
 
     app.get('/user', verifyJWT, async (req, res) => {
-      
+
       const users = await userCollection.find().toArray();
       res.send(users);
     })
@@ -85,17 +139,23 @@ async function run() {
         const bookings = await bookingCollection.find(query).toArray();
         return res.send(bookings)
       }
-      else{
+      else {
         return res.status(403).send({ message: 'Forbidden access' })
       }
 
     })
 
-    app.get('/admin/:email', async(req, res) =>{
+    app.get('/admin/:email', async (req, res) => {
       const email = req.params.email;
-      const user = await userCollection.findOne({email: email});
+      const user = await userCollection.findOne({ email: email });
       const isAdmin = user.role === 'admin';
-      res.send({admin: isAdmin})
+      res.send({ admin: isAdmin })
+    });
+
+    app.get('/doctor', verifyJWT, verifyAdmin, async (req, res) => {
+      const doctors = await doctorCollection.find().toArray();
+
+      res.send(doctors);
     })
 
 
@@ -109,6 +169,8 @@ async function run() {
         return res.send({ successful: false, booking: exist })
       }
       const result = await bookingCollection.insertOne(booking);
+      console.log('sending email')
+      sendConfirmationEmail(booking);
       return res.send({
         success: true, result
       });
@@ -116,8 +178,9 @@ async function run() {
     })
 
 
-    app.post('/doctor', async(req, res) =>{
+    app.post('/doctor', verifyJWT, verifyAdmin, async (req, res) => {
       const doctor = req.body;
+      console.log(doctor)
       const result = await doctorCollection.insertOne(doctor);
 
       res.send(result);
@@ -140,24 +203,22 @@ async function run() {
     })
 
 
-    app.put('/user/admin/:email', verifyJWT, async (req, res) => {
+    app.put('/user/admin/:email', verifyJWT, verifyAdmin, async (req, res) => {
       const email = req.params.email;
       const filter = { email: email };
-      const initiator = req.decoded.email;
-      const initiatorAcoount = await userCollection.findOne({email: initiator});
-      if(initiatorAcoount.role === 'admin'){
-        const updateDoc = {
-          $set: {role: 'admin'},
-        };
-  
-        const result = await userCollection.updateOne(filter, updateDoc);
-        res.send(result);
-      }
-      else{
-        res.status(403).send({ message: 'Forbidden access' })
-      }
+      const updateDoc = {
+        $set: { role: 'admin' },
+      };
+      const result = await userCollection.updateOne(filter, updateDoc);
+      res.send(result);
+    })
 
+    app.delete('/doctor/:email', verifyJWT, verifyAdmin, async (req, res) => {
+      const email = req.params.email;
+      const query = { email: email };
+      const result = await doctorCollection.deleteOne(query);
 
+      res.send(result);
     })
 
   } finally {
