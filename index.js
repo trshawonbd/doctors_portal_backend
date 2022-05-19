@@ -1,9 +1,12 @@
 const express = require('express')
 const cors = require('cors');
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 var nodemailer = require('nodemailer');
 var sgTransport = require('nodemailer-sendgrid-transport');
 require('dotenv').config();
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
+
 const app = express();
 const jwt = require('jsonwebtoken');
 const port = process.env.PORT || 5000;
@@ -80,6 +83,7 @@ async function run() {
     const bookingCollection = client.db("doctors_portal").collection("bookings");
     const userCollection = client.db("doctors_portal").collection("users");
     const doctorCollection = client.db("doctors_portal").collection("doctors");
+    const paymentCollection = client.db('doctors_portal').collection('payments');
 
 
     const verifyAdmin = async (req, res, next) => {
@@ -92,6 +96,28 @@ async function run() {
         res.status(403).send({ message: 'Forbidden access' })
       }
     }
+
+
+
+
+    app.post("/create-payment-intent", verifyJWT, async (req, res) => {
+      const service = req.body;
+      const price = service.price;
+      const amount = price * 100;
+
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: amount,
+        currency: "eur",
+        payment_method_types: [
+          "card"
+        ]
+        
+      });
+      res.send({
+        clientSecret: paymentIntent.client_secret,
+      });
+
+    })
 
     app.get('/service', async (req, res) => {
       const query = {};
@@ -143,6 +169,14 @@ async function run() {
         return res.status(403).send({ message: 'Forbidden access' })
       }
 
+    })
+
+    app.get('/booking/:id',verifyJWT, async(req, res) =>{
+      const id = req.params.id;
+      const query = {_id: ObjectId(id)};
+      const booking = await bookingCollection.findOne(query);
+
+      res.send(booking);
     })
 
     app.get('/admin/:email', async (req, res) => {
@@ -200,6 +234,21 @@ async function run() {
       const token = jwt.sign({ email: email }, process.env.ACCESS_TOKEN, { expiresIn: '1h' });
       res.send({ result, token });
 
+    })
+
+    app.patch('/booking/:id', verifyJWT, async(req, res) =>{
+      const id  = req.params.id;
+      const payment = req.body;
+      const filter = {_id: ObjectId(id)};
+      const updatedDoc = {
+        $set: {
+          paid: true,
+          transactionId: payment.transactionId
+        }
+      }
+      const result = await paymentCollection.insertOne(payment);
+      const updatedBooking = await bookingCollection.updateOne(filter, updatedDoc);
+      res.send(updatedBooking);
     })
 
 
